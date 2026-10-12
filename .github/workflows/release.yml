@@ -246,6 +246,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build project references
+        # v3.15.1 再基线后 monorepo 明显变大：macOS runner 默认 Node heap 上限
+        # 跑全量 tsc -b 会 OOM（FATAL ERROR: heap out of memory，exit 134）。
+        # 显式提高上限，避免依赖 runner 默认值。
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: pnpm typecheck
 
       - name: Build ZCode CLI distribution
@@ -356,7 +361,20 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build project references
+        # v3.15.1 再基线后 monorepo 明显变大：macOS runner 默认 Node heap 上限
+        # 跑全量 tsc -b 会 OOM（FATAL ERROR: heap out of memory，exit 134）。
+        # 显式提高上限，避免依赖 runner 默认值。
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: pnpm typecheck
+
+      # Linux 打包：fpm 产 rpm 需要系统 rpmbuild 与 xz，产 pacman 需要 bsdtar（libarchive-tools）；
+      # GitHub ubuntu runner 未预装，按 docs/desktop-ci-cd.md 的兜底清单现场安装。
+      - name: Install Linux packaging tools
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm xz-utils libarchive-tools fakeroot
 
       - name: Bundle desktop app
         env:

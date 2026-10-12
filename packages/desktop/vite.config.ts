@@ -212,7 +212,9 @@ export default defineConfig(({ mode }) => {
       // 兼容旧 renderer 读取名；新代码统一读 VITE_ZCODE_BASE_URL。
       "import.meta.env.VITE_ZCODE_ENDPOINT_ORIGIN": JSON.stringify(zcodeEndpointOrigin),
       "import.meta.env.VITE_CODING_PLAN_WEBVIEW_ORIGIN": JSON.stringify(codingPlanWebviewOrigin),
-      "import.meta.env.VITE_REWARDS_WEBVIEW_ORIGIN": JSON.stringify(env.VITE_REWARDS_WEBVIEW_ORIGIN ?? process.env.VITE_REWARDS_WEBVIEW_ORIGIN ?? ""),
+      "import.meta.env.VITE_REWARDS_WEBVIEW_ORIGIN": JSON.stringify(
+        env.VITE_REWARDS_WEBVIEW_ORIGIN ?? process.env.VITE_REWARDS_WEBVIEW_ORIGIN ?? "",
+      ),
       // Bugfix: E2E store bridge 只能由 WDIO 专用变量打开，避免把 ZCODE_ENV=test 产品环境误当成测试运行态。
       "import.meta.env.VITE_ZCODE_E2E_STORE_BRIDGE": JSON.stringify(
         e2eStoreBridgeEnabled ? "1" : "",
@@ -240,6 +242,8 @@ export default defineConfig(({ mode }) => {
           index: resolve(__dirname, "src/renderer/index.html"),
           "resource-manager": resolve(__dirname, "src/renderer/resource-manager.html"),
           "cua-permission-panel": resolve(__dirname, "src/renderer/cua-permission-panel.html"),
+          // 数据根决策窗口：pending 状态下先于主窗口打开，独立轻量页面。
+          "data-root-decision": resolve(__dirname, "src/renderer/data-root-decision.html"),
           // 插件 UI 沙箱的受信 shell，经 zcode-sandbox:// 提供
           "plugin-sandbox": resolve(__dirname, "src/renderer/plugin-sandbox.html"),
         },
