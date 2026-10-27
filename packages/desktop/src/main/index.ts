@@ -113,6 +113,10 @@ import type { DesktopWindowSize } from "./desktopWindowSize.js";
 import { maybeWarnArchitectureMismatch } from "./desktopArchitectureGuard.js";
 import { maybeBlockStartupForForceUpdate } from "./forceUpdateGuard.js";
 import { createDesktopTray, updateWindowsDesktopTrayMenu } from "./desktopTray.js";
+import {
+  createCloseToTrayCapabilityMonitor,
+  resolveCloseToTraySupported,
+} from "./desktopTraySupport.js";
 import { createWindowsCuaOperationIndicator } from "./windowsCuaOperationIndicator.js";
 import {
   configureDockMenu,
@@ -246,6 +250,12 @@ const linuxDesktopIntegrationIconPath =
     : iconPath;
 let currentApplicationLocale: Locale = DEFAULT_LOCALE;
 let closeToTrayOnWindows = true;
+// 关窗分支是同步回调，托盘实例是否创建成功和 Linux 托盘能力都必须从同步缓存读取；
+// 二者与设置项共同决定是否能真正隐藏窗口（spec: docs/desktop/linux-close-to-tray.md）。
+let desktopTrayReady = false;
+const closeToTrayCapabilityMonitor = createCloseToTrayCapabilityMonitor({
+  platform: process.platform,
+});
 // keep-awake：全局开关 keepAwakeWhileRunning。打开后主进程持有
 // powerSaveBlocker("prevent-app-suspension")，阻止系统闲置休眠（防不了合盖/手动睡眠）。
 // 不再绑定闲时任务活跃计数——设置页「常规」与 Automations 入口镜像同一配置。
@@ -1697,7 +1707,12 @@ function createWindowInstance(startupBootstrap: StartupWindowBootstrap = {}) {
         platform: process.platform,
         forceQuit: forceQuitRef.current,
         explicitQuitRequested: explicitQuitRef.current,
-        closeToTrayOnWindows,
+        closeToTray: closeToTrayOnWindows,
+        closeToTraySupported: resolveCloseToTraySupported({
+          platform: process.platform,
+          desktopTrayReady,
+          capabilitySupported: closeToTrayCapabilityMonitor.getSync()?.supported,
+        }),
         isLastWindow: getMainApplicationWindows().length === 1,
         label,
         logger,
@@ -2086,7 +2101,7 @@ app.whenReady().then(async () => {
       ),
     () => showCurrentWindowFromDock(primaryWindowCoordinator),
   );
-  createDesktopTray({
+  const desktopTray = createDesktopTray({
     getLocale: () => currentApplicationLocale,
     showCurrentWindow: () =>
       primaryWindowCoordinator.ensurePrimaryWindow("tray-show-current-window"),
@@ -2097,6 +2112,9 @@ app.whenReady().then(async () => {
     },
     logger,
   });
+  desktopTrayReady = desktopTray !== null;
+  // 启动后首次探测 Linux 托盘能力；Windows 会立即返回 supported=true。
+  void closeToTrayCapabilityMonitor.refresh();
 
   registerPlatformIpcHandlers({
     fetchHelpConfig: readHelpConfig,
@@ -2192,6 +2210,8 @@ app.whenReady().then(async () => {
     openUpdateStatusWindow,
     getAutoUpdatePreferences,
     setAutoDownloadAndInstallUpdates,
+    // Linux 设置页据此判断是否置灰“关闭窗口时隐藏到托盘”；monitor 内带 stale 缓存。
+    refreshCloseToTrayCapability: () => closeToTrayCapabilityMonitor.refresh(),
     getDesktopSessionActivity: () => ({
       runningAgentSessionCount: getRunningAgentSessionCount(),
     }),
