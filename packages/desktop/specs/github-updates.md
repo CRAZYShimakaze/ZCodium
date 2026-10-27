@@ -4,6 +4,7 @@
 
 - Main `autoUpdater.ts` 是更新状态、检查互斥、下载取消和安装调度的唯一所有者；UI 和 IPC 载荷不变。
 - 使用 electron-updater 内置 generic provider，默认根地址为 `https://github.com/ZCodium-project/ZCodium/releases/latest/download/`。
+- `initAutoUpdater` 每次初始化都必须显式 `setFeedURL`；打包产物里的 `app-update.yml` 只是 electron-builder 的构建占位，不能作为运行时 feed 来源。`electron-builder.config.js` 的 `publish.url` 必须与默认 feed 一致，不得写入 `localhost` 等不可达地址。
 - 读取 latest.yml、latest-mac.yml、latest-linux.yml（非 x64 Linux 使用 updater 原生架构后缀）；元数据中的文件路径、校验和与下载安装由 updater 处理。macOS 自动更新需要发布 ZIP 等原生 updater 所需资源，不能只有 DMG。
 - 启动参数 `--zcode-update-feed-url` 优先于 `ZCODE_UPDATE_FEED_URL`，开发及打包环境均可覆盖为 generic feed 根目录。覆盖不再接受旧官方 manifest API 语义。
 - 默认只发布 latest 稳定通道，preview 偏好不会切换到官方接口或请求 preview.yml；版本跳过归属 stable。保留现有 preview 产品禁用更新的边界。

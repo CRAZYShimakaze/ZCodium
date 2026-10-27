@@ -25,6 +25,10 @@ const AUTO_UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000;
 const AUTO_UPDATE_VISIBLE_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const UPDATE_FEED_URL_ENV = "ZCODE_UPDATE_FEED_URL";
 const UPDATE_FEED_URL_SWITCH = "--zcode-update-feed-url";
+// 运行时必须显式配置 generic feed；打包产物里的 app-update.yml 只是 electron-builder
+// 的构建占位，不能再作为实际更新源（#88：localhost 占位曾导致所有打包版检查更新失败）。
+const DEFAULT_UPDATE_FEED_URL =
+  "https://github.com/ZCodium-project/ZCodium/releases/latest/download/";
 const DEV_AUTO_UPDATE_ENV = "ZCODE_AUTO_UPDATE_DEV";
 const DEV_AUTO_UPDATE_SWITCH = "--zcode-auto-update-dev";
 const DEV_AUTO_UPDATE_VERSION_ENV = "ZCODE_AUTO_UPDATE_DEV_VERSION";
@@ -725,6 +729,18 @@ export function resolveUpdateFeedSourceFromStartupConfig(
         url: feedUrl,
       }
     : undefined;
+}
+
+function applyGenericUpdateProvider(options: InitAutoUpdaterOptions): void {
+  const url = options.updateFeedSource?.url.trim() || DEFAULT_UPDATE_FEED_URL;
+  // 每次 init 都重新设置 feed，避免 electron-updater 回退读取打包时的 app-update.yml 占位。
+  autoUpdater.setFeedURL({
+    provider: "generic",
+    url,
+    channel: "latest",
+    useMultipleRangeRequest: false,
+  });
+  logger.info(`[auto-update] generic provider applied url=${redactUpdateFeedUrlForLog(url)}`);
 }
 
 async function resolveUpdateReleaseChannel(
@@ -1510,6 +1526,7 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
   // 由 before-quit 主动安装，避免目标已经升高后退出装上旧包。
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.logger = logger;
+  applyGenericUpdateProvider(options);
   // #50：legacy 3.x 安装必须允许一次“降级”到 fork 1.x 版本线，否则 electron-updater
   // 会在发出 update-available 之前按 semver 过滤掉 1.x 迁移包。新 1.x 安装仍禁止降级。
   const currentUpdateVersion = semver.coerce(getCurrentAppVersionForUpdate());

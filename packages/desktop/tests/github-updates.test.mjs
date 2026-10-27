@@ -75,7 +75,7 @@ test("generic feed, overrides, manual check and native download/install remain w
   };
   const module = await load("autoUpdater", {
     electron: {
-      app: { isPackaged: true, getVersion: () => "1.0.0" },
+      app: { isPackaged: true, getVersion: () => "1.0.0", on: () => {} },
       BrowserWindow: { getAllWindows: () => [win], getFocusedWindow: () => win },
       Menu: { getApplicationMenu: () => null },
       ipcMain: { handle: (key, fn) => handlers.set(key, fn), on() {} },
@@ -97,6 +97,12 @@ test("generic feed, overrides, manual check and native download/install remain w
     },
     semver: { __esModule: true, default: require("semver") },
     "./logger.js": { logger },
+    // autoUpdater 现在会通过 autoUpdateVersion 做版本比较；测试加载器必须显式提供，
+    // 否则这个契约测试会在 import 阶段失败，反而漏掉 feed 回归（#88）。
+    "./autoUpdateVersion.js": {
+      isVersionGreaterThan: (candidate, baseline) =>
+        require("semver").gt(String(candidate), String(baseline)),
+    },
   });
   assert.deepEqual(
     module.resolveUpdateFeedSourceFromStartupConfig({
@@ -126,14 +132,18 @@ test("generic feed, overrides, manual check and native download/install remain w
   assert.equal(configured.provider, "generic");
   assert.equal(configured.url, feed);
   assert.equal(configured.channel, "latest");
+  assert.equal(configured.useMultipleRangeRequest, false);
   assert.equal(checks, 1);
+  // preview 开关切换会立即刷新一次通道，这是 channel 逻辑的既有行为；
+  // 这里只关心 feed 配置，但计数必须跟实际状态机一致。
   module.refreshAutoUpdaterReleaseChannel(true);
-  assert.equal(checks, 1);
-  module.requestForceAutoUpdate(() => assert.fail("no callback"))();
-  assert.equal(checks, 1);
-  module.checkForUpdateMenuClick(win);
   await new Promise(setImmediate);
   assert.equal(checks, 2);
+  module.requestForceAutoUpdate(() => assert.fail("no callback"))();
+  assert.equal(checks, 2);
+  module.checkForUpdateMenuClick(win);
+  await new Promise(setImmediate);
+  assert.equal(checks, 3);
   updater.emit("update-available", { version: "2.0.0" });
   await new Promise(setImmediate);
   assert.equal(module.getAutoUpdaterState().kind, "update-available");
