@@ -640,6 +640,8 @@ const disposingHostProcessTimers = new WeakMap<
 let updateStatusWindow: BrowserWindow | null = null;
 const UPDATE_STATUS_WINDOW_WIDTH = 512;
 const UPDATE_STATUS_WINDOW_COMPACT_HEIGHT = 205;
+// #88：手动安装说明包含架构选择和退出替换步骤，205px 的原生下载窗口会裁掉按钮。
+const UPDATE_STATUS_WINDOW_MANUAL_HEIGHT = 320;
 const UPDATE_STATUS_WINDOW_PROGRESS_HEIGHT = 224;
 const UPDATE_STATUS_WINDOW_READY_HEIGHT = UPDATE_STATUS_WINDOW_PROGRESS_HEIGHT - 54;
 const UPDATE_STATUS_WINDOW_TRAFFIC_LIGHT_POSITION = { x: 10, y: 10 } as const;
@@ -1509,6 +1511,9 @@ function syncUpdateStatusWindowChrome(win: BrowserWindow) {
 }
 
 function resolveUpdateStatusWindowHeight(state: UpdateStatePayload) {
+  if (state.kind === "update-available" && state.manualInstall) {
+    return UPDATE_STATUS_WINDOW_MANUAL_HEIGHT;
+  }
   if (state.kind === "download-progress") {
     return UPDATE_STATUS_WINDOW_PROGRESS_HEIGHT;
   }
@@ -1580,7 +1585,7 @@ function openUpdateStatusWindow() {
           minWidth: UPDATE_STATUS_WINDOW_WIDTH,
           minHeight: UPDATE_STATUS_WINDOW_READY_HEIGHT,
           maxWidth: UPDATE_STATUS_WINDOW_WIDTH,
-          maxHeight: UPDATE_STATUS_WINDOW_PROGRESS_HEIGHT,
+          maxHeight: UPDATE_STATUS_WINDOW_MANUAL_HEIGHT,
         }),
     resizable: false,
     minimizable: true,
