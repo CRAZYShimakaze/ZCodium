@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- autoUpdater 需要集中维护 Electron 事件、菜单状态与 IPC 交互，过度拆分会让更新状态流更难追踪 */
-import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, shell } from "electron";
 import type { ISettingService } from "@zcode/services";
 import pkg, { CancellationToken } from "electron-updater";
 import semver from "semver";
@@ -29,6 +29,8 @@ const UPDATE_FEED_URL_SWITCH = "--zcode-update-feed-url";
 // 的构建占位，不能再作为实际更新源（#88：localhost 占位曾导致所有打包版检查更新失败）。
 const DEFAULT_UPDATE_FEED_URL =
   "https://github.com/ZCodium-project/ZCodium/releases/latest/download/";
+const MANUAL_UPDATE_DOWNLOAD_URL = "https://github.com/ZCodium-project/ZCodium/releases/latest";
+let manualDownloadInFlight: Promise<void> | null = null;
 const DEV_AUTO_UPDATE_ENV = "ZCODE_AUTO_UPDATE_DEV";
 const DEV_AUTO_UPDATE_SWITCH = "--zcode-auto-update-dev";
 const DEV_AUTO_UPDATE_VERSION_ENV = "ZCODE_AUTO_UPDATE_DEV_VERSION";
@@ -158,6 +160,12 @@ function isDevAutoUpdateEnabled(): boolean {
 
 function canUseAutoUpdaterInCurrentRuntime(): boolean {
   return app.isPackaged || isDevAutoUpdateEnabled();
+}
+
+function requiresManualInstall(): boolean {
+  // #88：当前 macOS 正式发行未签名，Squirrel.Mac 不能自动安装。
+  // 不能只修好 feed 就继续向用户提供无法完成的“重启以更新”。
+  return app.isPackaged && process.platform === "darwin";
 }
 
 function shouldRelaunchForDevAutoUpdateInstall(): boolean {
@@ -345,6 +353,7 @@ function buildUpdateAvailableState(
     enabled: true,
     version,
     channel,
+    ...(requiresManualInstall() ? { manualInstall: true } : {}),
     ...(releaseNotes ? { releaseNotes } : {}),
   };
 }
@@ -401,6 +410,11 @@ function buildDownloadProgressState(
 }
 
 async function quitAndInstallUpdate(rejectUnavailable = false) {
+  if (requiresManualInstall()) {
+    // 防御旧 renderer/缓存重放安装命令：手动安装模式绝不退出或交给原生安装器。
+    if (rejectUnavailable) throw new Error("This macOS release requires manual installation.");
+    return;
+  }
   if (
     menuState.kind === "update-downloaded" &&
     readyUpdateVersion &&
@@ -1071,6 +1085,7 @@ async function isSkippedUpdateVersion(
 async function shouldAutoDownloadAndInstallUpdates(
   settingService: SettingServiceLike | undefined,
 ): Promise<boolean> {
+  if (requiresManualInstall()) return false;
   if (!settingService) {
     return false;
   }
@@ -1199,6 +1214,15 @@ export function downloadAvailableUpdate(reason = "renderer") {
     return;
   }
 
+  if (requiresManualInstall()) {
+    // 固定官方地址，不使用更新清单/renderer 提供的 URL；后台偏好不能自动打开浏览器。
+    if (reason !== "renderer") return;
+    manualDownloadInFlight ??= shell.openExternal(MANUAL_UPDATE_DOWNLOAD_URL).finally(() => {
+      manualDownloadInFlight = null;
+    });
+    return manualDownloadInFlight;
+  }
+
   downloadingUpdateVersion = menuState.version;
   downloadingUpdateReleaseNotes = menuState.releaseNotes ?? availableUpdateReleaseNotes;
   downloadingUpdateChannel = menuState.channel ?? availableUpdateChannel;
@@ -1307,6 +1331,7 @@ export async function hydratePendingPostUpdateReleaseNotes(settingService: Setti
   }
 
   if (
+    !requiresManualInstall() &&
     pendingPostUpdateReleaseNotes &&
     isPendingReleaseNotesForFutureVersion(pendingPostUpdateReleaseNotes)
   ) {
@@ -1324,7 +1349,7 @@ export async function hydratePendingPostUpdateReleaseNotes(settingService: Setti
 }
 
 export function syncReadyUpdateToWindow(win: BrowserWindow) {
-  if (!readyUpdateVersion || win.isDestroyed()) {
+  if (requiresManualInstall() || !readyUpdateVersion || win.isDestroyed()) {
     return;
   }
 
@@ -1619,6 +1644,7 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
   });
 
   autoUpdater.on("download-progress", (progress) => {
+    if (requiresManualInstall()) return;
     // 用户快速取消下载后，electron-updater 可能还会补发旧下载流的 progress。
     // 如果继续接收这个陈旧事件，UI 会从“可更新”被重新推回“下载中”，看起来像取消后卡住。
     if (!downloadCancellationToken || downloadCancellationToken.cancelled) {
@@ -1651,6 +1677,7 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
   });
 
   autoUpdater.on("update-downloaded", (info: UpdateDownloadedInfoLike) => {
+    if (requiresManualInstall()) return;
     readyUpdateVersion = info.version;
     readyUpdateRestoredFromPendingReleaseNotes = false;
     readyUpdateChannel = downloadingUpdateChannel ?? availableUpdateChannel;
@@ -1716,9 +1743,7 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
   ipcMain.on(PlatformChannels.QuitAndInstallUpdate, () => {
     void quitAndInstallUpdate();
   });
-  ipcMain.handle(PlatformChannels.DownloadUpdate, () => {
-    downloadAvailableUpdate("renderer");
-  });
+  ipcMain.handle(PlatformChannels.DownloadUpdate, () => downloadAvailableUpdate("renderer"));
   ipcMain.handle(PlatformChannels.CancelUpdateDownload, () => {
     cancelDownloadingUpdate("renderer");
   });
