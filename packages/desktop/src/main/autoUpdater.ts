@@ -54,7 +54,6 @@ let downloadingUpdateReleaseNotes: PostUpdateReleaseNotesPayload | null = null;
 let downloadingUpdateChannel: ElectronReleaseChannel | null = null;
 let downloadCancellationToken: CancellationToken | null = null;
 let readyUpdateChannel: ElectronReleaseChannel | null = null;
-let pendingManifestReleaseChannelRefresh: ElectronReleaseChannel | null = null;
 let onBeforeQuitAndInstall: (() => void | Promise<void>) | undefined;
 const acknowledgedPostUpdateReleaseNotesVersions = new Set<string>();
 const cancelledDownloadTokens = new WeakSet<CancellationToken>();
@@ -268,23 +267,14 @@ function completeAutoUpdateCheck(reason: string, checkId: number | null): void {
   activeAutoUpdateCheckId = null;
   activeAutoUpdateCheckChannel = null;
   settlingAutoUpdateCheckId = null;
+  logger.debug(`[auto-update] ${reason}: check completed`);
 
-  const pendingChannel = pendingManifestReleaseChannelRefresh;
   const shouldRecheckFailedDownload = pendingFailedDownloadRecheck;
   pendingFailedDownloadRecheck = false;
-  if (shouldRecheckFailedDownload && !pendingChannel && !activeForceAutoUpdateListener) {
+  if (shouldRecheckFailedDownload && !activeForceAutoUpdateListener) {
     // 下载失败发生在本次检查收口前。等标记清掉后再查一次，避免复查被进行中的检查直接丢掉。
     queueMicrotask(() => recheckAfterDownload?.("download-failed"));
   }
-  if (!pendingChannel) {
-    return;
-  }
-
-  pendingManifestReleaseChannelRefresh = null;
-  refreshAutoUpdaterReleaseChannel(
-    pendingChannel === "preview",
-    `${reason} pending release channel refresh`,
-  );
 }
 
 function finishAutoUpdateCheck(reason: string, checkId: number | null): void {
@@ -743,28 +733,10 @@ function applyGenericUpdateProvider(options: InitAutoUpdaterOptions): void {
   logger.info(`[auto-update] generic provider applied url=${redactUpdateFeedUrlForLog(url)}`);
 }
 
-async function resolveUpdateReleaseChannel(
-  settingService: SettingServiceLike | undefined,
-): Promise<ElectronReleaseChannel> {
-  if (!settingService) {
-    return "stable";
-  }
-
-  try {
-    const settings = await settingService.get();
-    return settings.receivePreviewUpdates === true ? "preview" : "stable";
-  } catch (error) {
-    logger.warn("[auto-update] read preview update setting failed:", error);
-    return "stable";
-  }
-}
-
-async function syncAutoUpdateCheckChannelFromSettings(
-  checkId: number,
-  settingService: SettingServiceLike | undefined,
-  reason: string,
-): Promise<void> {
-  const nextChannel = await resolveUpdateReleaseChannel(settingService);
+function syncStableAutoUpdateCheckChannel(checkId: number, reason: string): void {
+  // #88：generic provider 只读取 latest。旧 preview 偏好若改变逻辑通道，
+  // 会把稳定更新误标为 preview，连跳过版本也查询到错误的存储 key。
+  const nextChannel: ElectronReleaseChannel = "stable";
   if (activeAutoUpdateCheckId !== checkId) {
     return;
   }
@@ -774,8 +746,6 @@ async function syncAutoUpdateCheckChannelFromSettings(
       `[auto-update] ${reason}: check channel ${availableUpdateChannel} -> ${nextChannel}`,
     );
   }
-  // 服务端 manifest provider 会在 checkForUpdates 内部读取 preview 设置。
-  // 如果 begin 阶段仍用默认 stable 作为 expected channel，冷启动 preview 结果会被误判为 stale。
   availableUpdateChannel = nextChannel;
   activeAutoUpdateCheckChannel = nextChannel;
 }
@@ -1375,55 +1345,11 @@ export function refreshAutoUpdaterReleaseChannel(
   receivePreviewUpdates: boolean,
   reason = "settings receivePreviewUpdates changed",
 ) {
-  const nextChannel: ElectronReleaseChannel = receivePreviewUpdates ? "preview" : "stable";
-
-  if (!canUseAutoUpdaterInCurrentRuntime()) {
-    logger.info(`[auto-update] skip ${reason}: not packaged`);
-    return;
-  }
-
-  if (menuState.kind === "download-progress" || menuState.kind === "update-downloaded") {
-    logger.info(`[auto-update] skip ${reason}: state=${menuState.kind} channel=${nextChannel}`);
-    return;
-  }
-
-  if (checkForUpdatesInFlight) {
-    // 用户可能在启动检查尚未完成时切换 preview 开关。
-    // 不能立刻改 availableUpdateChannel，否则旧请求返回时会把旧通道的版本标成新通道；
-    // 这里只记录待刷新通道，等当前 check 收口后再重新请求 manifest。
-    pendingManifestReleaseChannelRefresh = nextChannel;
-    logger.info(
-      `[auto-update] defer ${reason}: check already in flight, next channel=${nextChannel}`,
-    );
-    return;
-  }
-
-  const currentChannel = getAutoUpdaterReleaseChannelForCurrentState();
-  if (currentChannel === nextChannel) {
-    logger.info(`[auto-update] skip ${reason}: channel unchanged (${nextChannel})`);
-    return;
-  }
-
-  logger.info(
-    `[auto-update] ${reason}: refresh manifest channel ${currentChannel} -> ${nextChannel}`,
+  // 保留设置同步接口，但稳定 feed 不提供 preview 更新；切换偏好不能清空
+  // 已展示目标、干扰正在下载的版本或额外发起一次相同 latest 请求。
+  logger.debug(
+    `[auto-update] ${reason}: stable-only feed ignores preview=${receivePreviewUpdates}`,
   );
-  availableUpdateChannel = nextChannel;
-  clearAvailableUpdateState();
-  setAutoUpdaterMenuState({ kind: "checking", enabled: false });
-  const checkId = beginAutoUpdateCheck();
-  autoUpdater
-    .checkForUpdates()
-    .catch((err) => {
-      logger.error(`[auto-update] ${reason} check failed:`, err);
-      setAutoUpdaterMenuState(
-        readyUpdateVersion
-          ? buildUpdateDownloadedState(readyUpdateVersion)
-          : { kind: "idle", enabled: true },
-      );
-    })
-    .finally(() => {
-      finishAutoUpdateCheck(reason, checkId);
-    });
 }
 
 export function syncAutoUpdaterStateToWindow(win: BrowserWindow) {
@@ -1508,7 +1434,6 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
   activeAutoUpdateCheckId = null;
   activeAutoUpdateCheckChannel = null;
   settlingAutoUpdateCheckId = null;
-  pendingManifestReleaseChannelRefresh = null;
   devAutoUpdateVersionOverride = null;
   availableUpdateChannel = "stable";
   clearAvailableUpdateState();
@@ -1549,7 +1474,7 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
     const checkId = beginAutoUpdateCheck();
     const checkForUpdatesPromise = options.settingService
       ? (async () => {
-          await syncAutoUpdateCheckChannelFromSettings(checkId, options.settingService, reason);
+          syncStableAutoUpdateCheckChannel(checkId, reason);
           await autoUpdater.checkForUpdates();
         })()
       : autoUpdater.checkForUpdates();

@@ -48,6 +48,14 @@ test("force guard never fetches, blocks or invokes callbacks", async () => {
 
 test("generic feed, overrides, manual check and native download/install remain wired", async () => {
   const updater = new EventEmitter();
+  const settings = {
+    receivePreviewUpdates: true,
+    skippedElectronUpdateVersions: { stable: "2.0.0" },
+  };
+  const settingService = {
+    get: async () => settings,
+    update: async (patch) => Object.assign(settings, patch),
+  };
   let checks = 0,
     downloads = 0,
     installs = 0,
@@ -97,12 +105,10 @@ test("generic feed, overrides, manual check and native download/install remain w
     },
     semver: { __esModule: true, default: require("semver") },
     "./logger.js": { logger },
-    // autoUpdater 现在会通过 autoUpdateVersion 做版本比较；测试加载器必须显式提供，
-    // 否则这个契约测试会在 import 阶段失败，反而漏掉 feed 回归（#88）。
-    "./autoUpdateVersion.js": {
-      isVersionGreaterThan: (candidate, baseline) =>
-        require("semver").gt(String(candidate), String(baseline)),
-    },
+    // 加载真实版本比较模块，避免手写替身漏掉 legacy 版本线的规则。
+    "./autoUpdateVersion.js": await load("autoUpdateVersion", {
+      semver: { __esModule: true, default: require("semver") },
+    }),
   });
   assert.deepEqual(
     module.resolveUpdateFeedSourceFromStartupConfig({
@@ -124,6 +130,7 @@ test("generic feed, overrides, manual check and native download/install remain w
     );
   }
   await module.initAutoUpdater({
+    settingService,
     onBeforeQuitAndInstall: async () => {
       preparation++;
     },
@@ -134,19 +141,29 @@ test("generic feed, overrides, manual check and native download/install remain w
   assert.equal(configured.channel, "latest");
   assert.equal(configured.useMultipleRangeRequest, false);
   assert.equal(checks, 1);
-  // preview 开关切换会立即刷新一次通道，这是 channel 逻辑的既有行为；
-  // 这里只关心 feed 配置，但计数必须跟实际状态机一致。
+  // #88：latest 只有 stable，preview 偏好不得发起重复检查或污染跳过版本的 key。
   module.refreshAutoUpdaterReleaseChannel(true);
   await new Promise(setImmediate);
-  assert.equal(checks, 2);
+  assert.equal(checks, 1);
   module.requestForceAutoUpdate(() => assert.fail("no callback"))();
-  assert.equal(checks, 2);
+  assert.equal(checks, 1);
+  updater.emit("update-available", { version: "2.0.0" });
+  await new Promise(setImmediate);
+  assert.equal(module.getAutoUpdaterState().kind, "idle");
   module.checkForUpdateMenuClick(win);
   await new Promise(setImmediate);
-  assert.equal(checks, 3);
+  assert.equal(checks, 2);
+  assert.equal(settings.skippedElectronUpdateVersions.stable, undefined);
   updater.emit("update-available", { version: "2.0.0" });
   await new Promise(setImmediate);
   assert.equal(module.getAutoUpdaterState().kind, "update-available");
+  assert.equal(module.getAutoUpdaterState().channel, "stable");
+  await module.skipAvailableUpdateVersion("2.0.0", settingService);
+  assert.equal(settings.skippedElectronUpdateVersions.stable, "2.0.0");
+  assert.equal(settings.skippedElectronUpdateVersions.preview, undefined);
+  await settingService.update({ skippedElectronUpdateVersions: {} });
+  updater.emit("update-available", { version: "2.0.0" });
+  await new Promise(setImmediate);
   await handlers.get("DownloadUpdate")();
   assert.equal(downloads, 1);
   updater.emit("update-downloaded", { version: "2.0.0" });
